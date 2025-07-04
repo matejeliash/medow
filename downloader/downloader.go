@@ -20,13 +20,15 @@ type Downloader struct {
 	TotalSize  int64 // full byte size of file
 	ResumedAt  int64
 
-	PassedMilliSecs int64
+	PassedMilliSc int64
 
 	OutputFile   *os.File
 	ProgressFile *os.File
+
+	BufferSize int64 // size of buffer for chunkfs received from server
 }
 
-const bufferSize = 8192
+//const bufferSize = 8192
 
 // create new Downloader object
 func NewDownloader(url string, filepath string, useProgressFile bool) *Downloader {
@@ -35,6 +37,7 @@ func NewDownloader(url string, filepath string, useProgressFile bool) *Downloade
 	d.Url = url
 	d.ProgressPath = filepath + ".progress"
 	d.UseProgressFile = useProgressFile
+	d.BufferSize = 32768
 	return d
 
 }
@@ -79,7 +82,7 @@ func (d *Downloader) CreateRequest() (*http.Request, error) {
 
 // download chunk of file from server
 func (d *Downloader) DownloadChunks(body io.Reader) error {
-	buf := make([]byte, bufferSize)
+	buf := make([]byte, d.BufferSize)
 
 	for {
 		n, readErr := body.Read(buf)
@@ -197,8 +200,8 @@ func (d *Downloader) ManageProgressPrinter(stopChan chan struct{}) {
 			select {
 			case <-ticker.C:
 				current := atomic.LoadInt64(&d.Downloaded)
-				atomic.AddInt64(&d.PassedMilliSecs, 1000)
-				passedSecs := float64(atomic.LoadInt64(&d.PassedMilliSecs)) / 1000.0
+				atomic.AddInt64(&d.PassedMilliSc, 1000)
+				passedSecs := float64(atomic.LoadInt64(&d.PassedMilliSc)) / 1000.0
 
 				if d.TotalSize > 0 {
 					percent := float64(current) / float64(d.TotalSize) * 100
