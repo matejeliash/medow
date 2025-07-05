@@ -25,7 +25,7 @@ type Downloader struct {
 	OutputFile   *os.File
 	ProgressFile *os.File
 
-	BufferSize int64 // size of buffer for chunkfs received from server
+	BufferSize int64 // size of buffer for chunks received from server
 }
 
 //const bufferSize = 8192
@@ -103,6 +103,39 @@ func (d *Downloader) DownloadChunks(body io.Reader) error {
 
 }
 
+func (d *Downloader) DownloadChunksWithLimit(body io.Reader, maxSpeedBytes int64) error {
+	buf := make([]byte, d.BufferSize)
+
+	startTime := time.Now()
+	var totalBytes int64 = 0
+
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			_, writeErr := d.OutputFile.Write(buf[:n])
+			if writeErr != nil {
+				return writeErr
+			}
+			atomic.AddInt64(&d.Downloaded, int64(n))
+			totalBytes += int64(n)
+
+			// Calculate expected duration for totalBytes
+			expectedDuration := time.Duration(float64(totalBytes)/float64(maxSpeedBytes)) * time.Second
+			elapsed := time.Since(startTime)
+
+			if sleepDuration := expectedDuration - elapsed; sleepDuration > 0 {
+				time.Sleep(sleepDuration)
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return nil
+			}
+			return readErr
+		}
+	}
+}
+
 // this function actually starts and manages downloading
 func (d *Downloader) Download() error {
 
@@ -127,7 +160,7 @@ func (d *Downloader) Download() error {
 
 	// force quit when server doesn't support partial downloads
 	if d.Downloaded > 0 && resp.StatusCode != http.StatusPartialContent {
-		fmt.Println("Server doesn't support partial downloads, pelase remove file: ", d.ProgressPath)
+		fmt.Println("Server doesn't support partial downloads, please remove file: ", d.ProgressPath)
 
 		return fmt.Errorf("Server does not support partial downloads, if you want to continue please remove file: %s\n", d.ProgressPath)
 
@@ -173,19 +206,11 @@ func (d *Downloader) Download() error {
 
 	if err == nil {
 		os.Remove(d.ProgressPath)
-		fmt.Println("Download copleted.")
+		fmt.Println("Download completed.")
 	}
 
 	return err
 
-}
-
-// format eta from seconds to HH:MM:SS
-func FormatEta(secs int) string {
-	h := secs / 3600
-	m := (secs % 3600) / 60
-	s := secs % 60
-	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 }
 
 // this function manages printing of downloading progress, it prints the progress
@@ -199,26 +224,26 @@ func (d *Downloader) ManageProgressPrinter(stopChan chan struct{}) {
 		for {
 			select {
 			case <-ticker.C:
+				// load downloaded byte count
 				current := atomic.LoadInt64(&d.Downloaded)
+				// load passed milliseconds
 				atomic.AddInt64(&d.PassedMilliSc, 1000)
 				passedSecs := float64(atomic.LoadInt64(&d.PassedMilliSc)) / 1000.0
 
 				if d.TotalSize > 0 {
-					percent := float64(current) / float64(d.TotalSize) * 100
-					speed := float64(current-d.ResumedAt) / passedSecs // MB/s
-					eta := 0
-					if speed > 0 {
-						eta = int(float64(d.TotalSize-current) / speed)
+					var bps float64 = 0
+					// also remove d.ResumedAt which is loaded when downloading is resumed
+					if passedSecs > 0 {
+						bps = float64(current-d.ResumedAt) / passedSecs // speed is byte/s
+					}
+
+					var eta int64 = 0
+					if bps > 0 {
+						eta = int64(float64(d.TotalSize-current) / bps)
 
 					}
 
-					fmt.Printf("\rProgress: %.2f%% %d/%d MB  DS: %.2f MB/s ETA: %s",
-						percent,
-						current/1_000_000,
-						d.TotalSize/1_000_000,
-						speed/1_000_000,
-						FormatEta(eta),
-					)
+					PrintFormattedInfo(current, d.TotalSize, bps, eta)
 
 				}
 
